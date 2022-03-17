@@ -121,8 +121,74 @@ class DfuTivaCmdReset(DfuRequestDnload):
         self.packet = bytearray(struct.pack("<BBHL",self.CMD_ID, 0, 0, 0))
         return
 
-class DfuDeviceTiva():
+# Example Custom manufacturing structure at the end of flash
+class MfgFmt1():
+    SIGNATURE = 0x616c7545
+    FMT = 1
+    BSP_LEN = 24
+    LEN = BSP_LEN + 8
+    def __init__(self, productId='None', serialNum=0, rand0=None, rand1=None, data=None):
+        if data is not None:
+            self.mfgData = data
 
+            (
+                self.rand0,
+                self.rand1,
+                self.productId,
+                self.serialNum,
+                self.usrLen,
+                self.bspLen,
+                self.rsv,
+                self.fmt,
+                self.signature
+             ) = struct.unpack("<QQLLBBBBL", self.mfgData)
+
+            self.valid = (self.signature == self.SIGNATURE) and \
+                         (self.fmt == self.FMT) and \
+                         (self.rsv == 0) and \
+                         (self.bspLen == self.BSP_LEN) and \
+                         (self.usrLen == 0)
+        else:
+            self.valid = True
+            self.rand0 = rand0
+            self.rand1 = rand1
+            self.productId = productId
+            self.serialNum = serialNum
+            self.usrLen = 0
+            self.bspLen = self.BSP_LEN
+            self.rsv = 0
+            self.fmt = self.FMT
+            self.signature = self.SIGNATURE
+            self.rand0 = rand0 if rand0 is not None else int.from_bytes(os.urandom(8), "little", signed=False)
+            self.rand1 = rand1 if rand1 is not None else int.from_bytes(os.urandom(8), "little", signed=False)
+            self.productId = int.from_bytes(str.encode(productId), "little", signed=False)
+            self.mfgData = bytearray(struct.pack("<QQLLBBBBL",
+                                                 self.rand0,
+                                                 self.rand1,
+                                                 self.productId,
+                                                 self.serialNum,
+                                                 self.usrLen,
+                                                 self.bspLen,
+                                                 self.rsv,
+                                                 self.fmt,
+                                                 self.SIGNATURE))
+        return
+
+    def __str__(self):
+        strData = ''.join('{:02X} '.format(x) for x in self.mfgData)
+        if self.valid:
+            s = f"rand0:{self.rand0:016X} "
+            s += f"rand1:{self.rand1:016X} "
+            s += f"pid:{self.productId:08X} "
+            s += f"sn:{self.serialNum:04X}\n"
+            s += f"\t{strData}"
+        else:
+            s = "Invalid\n"
+            s += f"\t{strData}"
+        return s
+
+
+class DfuDeviceTiva():
     # Tiva processors have minimum flash block size of 1K. DFU messages
     # are designed to take block number in 1K chunks even though some
     # processors have much larger flash block sizes. The initial query
@@ -255,26 +321,17 @@ class DfuDeviceTiva():
         return
 
     # Custom function to write to the tail end of flash. Used for manufacturing data
-    def mfgWrite(self, productId, serialNum, rand0=None, rand1=None):
-        fmt = 1
-        rsv = 0
-        bspLen = 24
-        usrLen = 0
-        if rand0 is None: rand0 = int.from_bytes(os.urandom(8), "little", signed=False)
-        if rand1 is None: rand1 = int.from_bytes(os.urandom(8), "little", signed=False)
-        pId = int.from_bytes(str.encode(productId), "little", signed=False)
-        mfgData = struct.pack("<QQLLBBBBL", rand0, rand1, pId, serialNum, usrLen, bspLen, rsv, fmt, 0x616c7545)
-
+    def mfgWrite(self, mfg):
         mfgBlk = self.flashBlockRead((self.numFlashBlocks-1))
         self.flashBlockErase((self.numFlashBlocks-1))
-        mfgBlk = mfgBlk[:-len(mfgData)] + mfgData
-        self.flashBlockWrite( (self.numFlashBlocks-1), mfgBlk )
+        mfgBlk = mfgBlk[:-mfg.LEN] + mfg.mfgData
+        self.flashBlockWrite((self.numFlashBlocks-1), mfgBlk)
         return
 
     # Custom function to read out the tail end of flash to pull manufacturing parameters
     def mfgRead(self):
         mfgBlk = self.flashBlockRead((self.numFlashBlocks-1))
-        return struct.unpack("<QQLLBBBBL", mfgBlk[-32:])
+        return MfgFmt1(data=mfgBlk[-MfgFmt1.LEN:])
 
     def imageRead(self, statusCallback=None):
         offset = 0
@@ -376,9 +433,13 @@ def dfuTivaFindAll(vendorId=0x1CBE, productId=0x00FF):
 def main():
     devs = dfuTivaFindAll()
     tiva = DfuDeviceTiva(devs[0])
-    mfgTuple = tiva.mfgRead()
-    print(f"rand0:{mfgTuple[0]:016X} rand1:{mfgTuple[1]:016X} pid:{mfgTuple[2]:08X} sn:{mfgTuple[3]:04X}")
-    #tiva.mfgWrite("LPM1", 0x1234)
+    mfg = tiva.mfgRead()
+    print(mfg)
+    # mfg = MfgFmt1(productId='LPM1', serialNum=0x1234)
+    # print(mfg)
+    # tiva.mfgWrite(mfg)
+    # mfg = tiva.mfgRead()
+    # print(mfg)
     return
 
 if __name__ == "__main__":

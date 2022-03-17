@@ -140,11 +140,16 @@ def programLoop(args):
     if dlFile:
         if not tiva.loadElf(dlFile):
             tiva.loadBinary(dlFile)
+        print("Reading Manufacturing Area")
+        mfg = tiva.mfgRead()
         print("Flash Erasing")
         tiva.flashErase(statusCallback)
         print("\nDone!")
         print("Flash Programming")
         tiva.imageFlash(statusCallback)
+        if mfg.valid:
+            print("Restoring Manufacturing Area")
+            tiva.mfgWrite(mfg)
         print("\nDone!")
 
     # If reset option passefd in
