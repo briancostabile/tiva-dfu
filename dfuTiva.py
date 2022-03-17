@@ -121,11 +121,17 @@ class DfuTivaCmdReset(DfuRequestDnload):
         self.packet = bytearray(struct.pack("<BBHL",self.CMD_ID, 0, 0, 0))
         return
 
-
 class DfuDeviceTiva():
+
+    # Tiva processors have minimum flash block size of 1K. DFU messages
+    # are designed to take block number in 1K chunks even though some
+    # processors have much larger flash block sizes. The initial query
+    # of the device will indicate the actual flash sector (block) size
+    # which is the smallest erase size.
+    CMD_BLK_SIZE = 1024
+
     def __init__(self, dev):
         self.dev = dev
-        self.maxSize = self.dev.altDesc.wTransferSize
 
         # Clear any previous state/stauts
         status = dev.getStatus()
@@ -137,35 +143,45 @@ class DfuDeviceTiva():
         info = self.getInfo()
         self.flashBlockSize = info.flashBlockSize
         self.numFlashBlocks = info.numFlashBlocks
+        self.cmdBlkMult = self.flashBlockSize // self.CMD_BLK_SIZE
         self.partInfo = info.partInfo
         self.classInfo = info.classInfo
         self.flashTop  = info.flashTop
+        self.dfuBlockSize = self.dev.altDesc.wTransferSize
         self.appStartAddr = info.appStartAddr
 
-        self.flashStatus = {}
-        self.flashStatusUpdate()
+        # print(f"flashBLockSize:{self.flashBlockSize}\n" +
+        #       f"numFlashBlocks:{self.numFlashBlocks}\n" +
+        #       f"partInfo:0x{self.partInfo:08X}\n" +
+        #       f"clasInfo:{self.classInfo:08X}\n" +
+        #       f"flashTop:{self.flashTop:08X}\n" +
+        #       f"appStartAddr:0x{self.appStartAddr:08X}")
 
         self.image = None
         return
 
-    def flashStatusUpdate(self):
-        for blk in range(self.numFlashBlocks):
-            self.dev.tunnelDnloadNoStatus(DfuTivaCmdCheck(blk, self.flashBlockSize))
+    # 0 - numFlashBlocks (Block size depends on part)
+    def flashBlockErase(self, blkNum):
+        self.dev.tunnelDnloadNoStatus(DfuTivaCmdErase((blkNum * self.cmdBlkMult), 1))
+        status = self.dev.getStatus()
+        while (status.bState != DfuState.DFU_IDLE):
+            time.sleep((status.bwPollTimeout/100))
             status = self.dev.getStatus()
-            self.flashStatus[blk] = (status.bStatus == DfuStatus.OK)
+
+        self.dev.tunnelDnloadNoStatus(DfuTivaCmdCheck((blkNum * self.cmdBlkMult), self.flashBlockSize))
+        status = self.dev.getStatus()
+        while (status.bStatus != DfuStatus.OK):
+            time.sleep((status.bwPollTimeout/100))
+            status = self.dev.getStatus()
         return
 
+    # Erase entire Flash
     def flashErase(self, statusCallback=None):
         percentComplete = 0
         for i in range(self.numFlashBlocks):
-            self.dev.tunnelDnloadNoStatus(DfuTivaCmdErase(i, 1))
-            status = self.dev.getStatus()
-            while (status.bState != DfuState.DFU_IDLE):
-                time.sleep((status.bwPollTimeout/100))
-                status = self.dev.getStatus()
+            self.flashBlockErase(i)
             percentComplete = ((i/self.numFlashBlocks) * 100)
             if statusCallback is not None: statusCallback(True, percentComplete)
-        self.flashStatusUpdate()
         if statusCallback is not None: statusCallback(True, 100)
         return
 
@@ -184,40 +200,41 @@ class DfuDeviceTiva():
         self.dev.tunnelDnload(DfuTivaCmdBin(enable))
         return
 
-    def imageRead(self, statusCallback=None):
-        offset = 0
-        size = self.flashTop
-        self.image = bytearray()
+    def flashBlockRead(self, blkNum, statusCallback=None):
+        block = bytearray()
 
         self.uploadPrefixEnable(False)
-        self.dev.tunnelDnload(DfuTivaCmdRead(offset, size))
-        size += 8
+        self.dev.tunnelDnload(DfuTivaCmdRead((blkNum * self.cmdBlkMult), self.flashBlockSize))
+        remain = self.flashBlockSize + 8
         percentComplete = 0
-        while size > 0:
-            readSize = self.maxSize if (size > self.maxSize) else size
-            self.image += bytearray(self.dev.upload(readSize))
-            percentComplete = (((self.flashTop - size)/self.flashTop) * 100)
+        while remain > 0:
+            readSize = self.dfuBlockSize if (remain > self.dfuBlockSize) else remain
+            block += bytearray(self.dev.upload(readSize))
+            remain -= readSize
+            percentComplete = (((self.flashBlockSize - remain)/self.flashBlockSize) * 100)
             if statusCallback is not None: statusCallback(True, percentComplete)
-            size -= readSize
 
         # Remove 8byte header from first packet
-        self.image = self.image[8:]
+        block = block[8:]
 
-        return self.image
+        return block
 
-    def imageFlash(self, statusCallback=None):
+    def flashBlockWrite(self, blkNum, blkData, statusCallback=None):
+        # Make sure the passed in data is the right size
+        if (len(blkData) != self.flashBlockSize):
+            print("ERROR: blkDataLen:{len(blkData)} != flashBlockSize:{self.flashBlockSize}")
+            return
+
         # put the programming command header in front of the raw image
-        data = DfuTivaCmdProg(0, len(self.image)).packet
-        data += self.image
+        data = DfuTivaCmdProg((blkNum * self.cmdBlkMult), len(blkData)).packet
+        data += blkData
         remain = len(data)
-        #print(f"Flashing Image: {len(self.image)} bytes")
-        wBlockNum = 0
         offset = 0
         ret = 0
         percentComplete = 0
+        wBlockNum = 0
         while (remain > 0) and ret is not None:
-            writeSize = self.maxSize if (remain > self.maxSize) else remain
-            #print(f"block[{wBlockNum:04}] len:{writeSize} total:{offset}", end='\r', flush=True)
+            writeSize = self.dfuBlockSize if (remain > self.dfuBlockSize) else remain
             writeData = data[ offset : (offset + writeSize) ]
             ret = self.dev.dnload(wBlockNum, writeData)
             offset += writeSize
@@ -235,6 +252,61 @@ class DfuDeviceTiva():
             status = self.dev.getStatus()
             self.dev.abort()
             status = self.dev.getStatus()
+        return
+
+    # Custom function to write to the tail end of flash. Used for manufacturing data
+    def mfgWrite(self, productId, serialNum, rand0=None, rand1=None):
+        fmt = 1
+        rsv = 0
+        bspLen = 24
+        usrLen = 0
+        if rand0 is None: rand0 = int.from_bytes(os.urandom(8), "little", signed=False)
+        if rand1 is None: rand1 = int.from_bytes(os.urandom(8), "little", signed=False)
+        pId = int.from_bytes(str.encode(productId), "little", signed=False)
+        mfgData = struct.pack("<QQLLBBBBL", rand0, rand1, pId, serialNum, usrLen, bspLen, rsv, fmt, 0x616c7545)
+
+        mfgBlk = self.flashBlockRead((self.numFlashBlocks-1))
+        self.flashBlockErase((self.numFlashBlocks-1))
+        mfgBlk = mfgBlk[:-len(mfgData)] + mfgData
+        self.flashBlockWrite( (self.numFlashBlocks-1), mfgBlk )
+        return
+
+    # Custom function to read out the tail end of flash to pull manufacturing parameters
+    def mfgRead(self):
+        mfgBlk = self.flashBlockRead((self.numFlashBlocks-1))
+        return struct.unpack("<QQLLBBBBL", mfgBlk[-32:])
+
+    def imageRead(self, statusCallback=None):
+        offset = 0
+        size = self.flashTop
+        self.image = bytearray()
+
+        self.uploadPrefixEnable(False)
+        self.dev.tunnelDnload(DfuTivaCmdRead(offset, size))
+        size += 8
+        percentComplete = 0
+        while size > 0:
+            readSize = self.dfuBlockSize if (size > self.dfuBlockSize) else size
+            self.image += bytearray(self.dev.upload(readSize))
+            percentComplete = (((self.flashTop - size)/self.flashTop) * 100)
+            if statusCallback is not None: statusCallback(True, percentComplete)
+            size -= readSize
+
+        # Remove 8byte header from first packet
+        self.image = self.image[8:]
+
+        return self.image
+
+    # Break up into flash writes into sectors
+    # Assume that the flash is erased so skip blocks that are all FFs
+    def imageFlash(self, statusCallback=None):
+        for i in range(self.numFlashBlocks):
+            offset = i * self.flashBlockSize
+            data = self.image[offset:(offset+self.flashBlockSize)]
+            if ((data[0] != 0xFF) or (len(set(data)) > 1)):
+                self.flashBlockWrite(i, data)
+            if statusCallback is not None: statusCallback(True, ((i/self.numFlashBlocks) * 100))
+        if statusCallback is not None: statusCallback(True, 100)
         return
 
     def dumpBinary(self, filename):
@@ -292,11 +364,23 @@ class DfuDeviceTiva():
 
 ##
 # Utility function to find all the Tiva USB devices in DFU mode
-def dfuTivaFindAll():
-    devices = dfuFindAll(vendorId=0x1CBE, productId=0x00FF)
+def dfuTivaFindAll(vendorId=0x1CBE, productId=0x00FF):
+    devices = dfuFindAll(vendorId, productId)
     devs = []
     for dev in devices:
         ret = dev.send(DfuRequestTivaQuery())
         if (DfuResponseTivaQuery(ret).valid):
             devs.append(dev)
     return devs
+
+def main():
+    devs = dfuTivaFindAll()
+    tiva = DfuDeviceTiva(devs[0])
+    mfgTuple = tiva.mfgRead()
+    print(f"rand0:{mfgTuple[0]:016X} rand1:{mfgTuple[1]:016X} pid:{mfgTuple[2]:08X} sn:{mfgTuple[3]:04X}")
+    #tiva.mfgWrite("LPM1", 0x1234)
+    return
+
+if __name__ == "__main__":
+    main()
+    sys.exit(0)
