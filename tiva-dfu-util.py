@@ -1,42 +1,48 @@
 #!/usr/bin/env python
-#-------------------------------------------------------------------------------
+# -------------------------------------------------------------------------------
 # Texas Instruments Tiva Device Firmware Update tool
 #
 # Brian Costabile (bcostabi@gmail.com)
 # https://github.com/briancostabile/tiva-dfu.git
 # This code is in the public domain
-#-------------------------------------------------------------------------------
-import os
-import sys
+# -------------------------------------------------------------------------------
 import argparse
 import datetime
+import os
+import sys
+
 from dfuTiva import DfuDeviceTiva, dfuTivaFindAll
 
+
 def statusCallback(statusOk, percentComplete):
-    print(f"{percentComplete:3.2f}%", end='\r', flush=True)
+    print(f"{percentComplete:3.2f}%", end="\r", flush=True)
     return
 
+
 def fmtPortNumbers(portNumbers):
-    return str(portNumbers).strip('(').rstrip(')').rstrip(',').replace(', ', '.')
+    return str(portNumbers).strip("(").rstrip(")").rstrip(",").replace(", ", ".")
+
 
 def printDev(dev):
     d = dev.usbDev
     c = dev.usbCfg
     i = dev.usbIntf
-    print("Found TivaDFU: "
-            f"[{d.idVendor:04X}:{d.idProduct:04X}] "
-            f"ver={d.bcdDevice:04} "
-            f"devnum={d.address} "
-            f"cfg={c.bConfigurationValue} "
-            f"intf={i.bInterfaceNumber} "
-            f"path=\"{d.bus}-{fmtPortNumbers(d.port_numbers)}\" "
-            f"alt={i.bAlternateSetting} "
-            f"name=\"{dev.altName}\" "
-            f"serial=\"{d.serial_number}\"")
+    print(
+        "Found TivaDFU: "
+        f"[{d.idVendor:04X}:{d.idProduct:04X}] "
+        f"ver={d.bcdDevice:04} "
+        f"devnum={d.address} "
+        f"cfg={c.bConfigurationValue} "
+        f"intf={i.bInterfaceNumber} "
+        f'path="{d.bus}-{fmtPortNumbers(d.port_numbers)}" '
+        f"alt={i.bAlternateSetting} "
+        f'name="{dev.altName}" '
+        f'serial="{d.serial_number}"'
+    )
     return
 
 
-def programLoop(args):
+def programLoop(args):  # noqa: C901
     devs = dfuTivaFindAll()
 
     # Quick Error Check
@@ -44,7 +50,7 @@ def programLoop(args):
         return False
 
     # Handle list only if upload and download are not specified:
-    if (args.list and ((args.upload is None) and (args.download is None))):
+    if args.list and ((args.upload is None) and (args.download is None)):
         for dev in devs:
             printDev(dev)
         return True
@@ -59,7 +65,9 @@ def programLoop(args):
             vendor = int(vendor, base=16)
             product = int(product, base=16)
             for dev in devs:
-                if (vendor == dev.usbDev.idVendor) and (product == dev.usbDev.idProduct):
+                if (vendor == dev.usbDev.idVendor) and (
+                    product == dev.usbDev.idProduct
+                ):
                     f.append(dev)
         devs = f
 
@@ -76,7 +84,9 @@ def programLoop(args):
         bus, port = args.path[0].split("-")
         f = []
         for dev in devs:
-            if bus == str(dev.usbDev.bus) and port == fmtPortNumbers(dev.usbDev.port_numbers):
+            if bus == str(dev.usbDev.bus) and port == fmtPortNumbers(
+                dev.usbDev.port_numbers
+            ):
                 f.append(dev)
         devs = f
 
@@ -122,14 +132,14 @@ def programLoop(args):
 
     # For download operation, Make sure specified download file exists
     dlFile = None
-    if (args.download is not None):
+    if args.download is not None:
         dlFile = os.path.abspath(args.download[0])
         if not os.path.exists(dlFile):
             print(f"ERROR: {dlFile} does not exist")
             return True
 
     ulFile = None
-    if (args.upload is not None):
+    if args.upload is not None:
         ulFile = os.path.abspath(args.upload[0])
 
     # Upload takes precedence
@@ -164,185 +174,203 @@ class CustomHelpFormatter(argparse.HelpFormatter):
     def _format_action_invocation(self, action):
         if not action.option_strings or action.nargs == 0:
             if action.option_strings:
-                return ' '.join(action.option_strings)
+                return " ".join(action.option_strings)
             return super()._format_action_invocation(action)
         default = self._get_default_metavar_for_optional(action)
         args_string = self._format_args(action, default)
-        return ' '.join(action.option_strings) + ' ' + args_string
+        return " ".join(action.option_strings) + " " + args_string
+
 
 # Main program
 def main():
-    fmt = lambda prog: CustomHelpFormatter(prog)
     parser = argparse.ArgumentParser(
-        formatter_class=fmt,
-        prog='tiva-dfu-util.py',
-        description="TI Tiva Processor Device Firmware Update Utility"
+        formatter_class=CustomHelpFormatter,
+        prog="tiva-dfu-util.py",
+        description="TI Tiva Processor Device Firmware Update Utility",
     )
 
     parser.add_argument(
-        "-V", "--version",
-        action='version',
-        version='%(prog)s 1.0',
+        "-V",
+        "--version",
+        action="version",
+        version="%(prog)s 1.0",
         help="Print the version number",
     )
 
     parser.add_argument(
-        "-v", "--verbose",
-        action='store_true',
-        dest='verbose',
+        "-v",
+        "--verbose",
+        action="store_true",
+        dest="verbose",
         help="Print verbose debug statements",
     )
 
     parser.add_argument(
-        "-l", "--list",
-        action='store_true',
+        "-l",
+        "--list",
+        action="store_true",
         dest="list",
         help="List currently attached DFU capable devices",
     )
 
     parser.add_argument(
-        "-e", "--detach",
-        action='store_true',
+        "-e",
+        "--detach",
+        action="store_true",
         dest="detach",
         help="Detach currently attached DFU capable devices",
     )
 
     parser.add_argument(
-        "-E", "--detach-delay",
+        "-E",
+        "--detach-delay",
         nargs=1,
         type=int,
         default=None,
-        action='store',
+        action="store",
         dest="detach-delay",
-        metavar='<seconds>',
+        metavar="<seconds>",
         help="Time to wait before reopening a device after detach",
     )
 
     parser.add_argument(
-        "-d", "--device",
+        "-d",
+        "--device",
         nargs=1,
         type=str,
-        action='store',
+        action="store",
         dest="device",
-        metavar='<vendor>:<product>[,<vendor_dfu>:<product_dfu>]',
+        metavar="<vendor>:<product>[,<vendor_dfu>:<product_dfu>]",
         help="Specify Vendor/Product ID(s) of DFU device",
     )
 
     parser.add_argument(
-        "-n", "--devnum",
+        "-n",
+        "--devnum",
         nargs=1,
         type=int,
         default=None,
-        action='store',
+        action="store",
         dest="devnum",
-        metavar='<dnum>',
+        metavar="<dnum>",
         help="Match given device number (devnum from --list)",
     )
 
     parser.add_argument(
-        "-p", "--path",
+        "-p",
+        "--path",
         nargs=1,
         type=str,
-        action='store',
+        action="store",
         dest="path",
-        metavar='<bus-port. ... .port>',
+        metavar="<bus-port. ... .port>",
         help="Specify path to DFU device",
     )
 
     parser.add_argument(
-        "-c", "--cfg",
+        "-c",
+        "--cfg",
         nargs=1,
         type=int,
         default=None,
-        action='store',
+        action="store",
         dest="cfg",
-        metavar='<config_nr>',
+        metavar="<config_nr>",
         help="Specify the Configuration of DFU device",
     )
 
     parser.add_argument(
-        "-i", "--intf",
+        "-i",
+        "--intf",
         nargs=1,
         type=int,
         default=None,
-        action='store',
+        action="store",
         dest="intf",
-        metavar='<intf_nr>',
+        metavar="<intf_nr>",
         help="Specify the DFU Interface number",
     )
 
     parser.add_argument(
-        "-S", "--serial",
+        "-S",
+        "--serial",
         nargs=1,
         type=str,
-        action='store',
+        action="store",
         dest="serial",
-        metavar='<serial_string>[,<serial_string_dfu>]',
+        metavar="<serial_string>[,<serial_string_dfu>]",
         help="Specify Serial String of DFU device",
     )
 
     parser.add_argument(
-        "-a", "--alt",
+        "-a",
+        "--alt",
         nargs=1,
         type=str,
-        action='store',
+        action="store",
         dest="alt",
-        metavar='<alt>',
+        metavar="<alt>",
         help="Specify the Altsetting of the DFU Interface by name or by number",
     )
 
     parser.add_argument(
-        "-t", "--transfer-size",
+        "-t",
+        "--transfer-size",
         nargs=1,
         type=int,
         default=None,
-        action='store',
+        action="store",
         dest="transfer-size",
-        metavar='<size>',
+        metavar="<size>",
         help="Specify the number of bytes per USB Transfer",
     )
 
     parser.add_argument(
-        "-U", "--upload",
+        "-U",
+        "--upload",
         nargs=1,
         type=str,
-        action='store',
+        action="store",
         dest="upload",
-        metavar='<file>',
+        metavar="<file>",
         help="Read firmware from device into <file>",
     )
 
     parser.add_argument(
-        "-Z", "--upload-size",
+        "-Z",
+        "--upload-size",
         nargs=1,
         type=int,
         default=0,
-        action='store',
+        action="store",
         dest="upload-size",
-        metavar='<bytes>',
+        metavar="<bytes>",
         help="Specify the expected upload size in bytes",
     )
 
     parser.add_argument(
-        "-D", "--download",
+        "-D",
+        "--download",
         nargs=1,
         type=str,
-        action='store',
+        action="store",
         dest="download",
-        metavar='<file>',
+        metavar="<file>",
         help="Write firmware from <file> into device",
     )
 
     parser.add_argument(
-        "-R", "--reset",
-        action='store_true',
+        "-R",
+        "--reset",
+        action="store_true",
         dest="reset",
         help="Issue USB Reset signalling once we're finished",
     )
 
     parser.add_argument(
-        "-w", "--wait",
-        action='store_true',
+        "-w",
+        "--wait",
+        action="store_true",
         dest="wait",
         help="Wait for device to appear",
     )
@@ -366,6 +394,7 @@ def main():
             print("ERROR: Device Not Found")
 
     return
+
 
 if __name__ == "__main__":
     main()
